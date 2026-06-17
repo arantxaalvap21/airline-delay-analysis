@@ -2,7 +2,7 @@
 
 Los datos utilizados en este proyecto provienen de la base pública **Reporting Carrier On-Time Performance** del Bureau of Transportation Statistics (BTS).
 
-Por tamaño, los archivos CSV no se incluyen directamente en el repositorio. Para reproducir el proyecto, descargar manualmente los datos desde TranStats (https://www.transtats.bts.gov/DL_SelectFields.aspx?QO_fu146_anzr=b0-gvzr&gnoyr_VQ=FGJ&utm_source=chatgpt.com) con los siguientes filtros:
+Por tamaño, los archivos CSV no se incluyen directamente en el repositorio. Para reproducir el proyecto, descargar manualmente los datos desde TranStats (https://www.transtats.bts.gov/DL_SelectFields.aspx?QO_fu146_anzr=b0-gvzr&gnoyr_VQ=FGJ) con los siguientes filtros:
 
 - Database: On-Time
 - Table: Reporting Carrier On-Time Performance
