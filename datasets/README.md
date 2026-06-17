@@ -10,6 +10,15 @@ Por tamaño, los archivos CSV no se incluyen directamente en el repositorio. Par
 - Year: 2026
 - Periods: January, February, March
 
+Guardar los archivos en:
+
+datasets/raw/
+
+con los siguientes nombres:
+
+- flights_2026_01.csv
+- flights_2026_02.csv
+- flights_2026_03.csv
 
 Marcando las siguientes casillas:
 - Year
@@ -71,12 +80,3 @@ Marcando las siguientes casillas:
 - SecurityDelay
 - LateAircraftDelay
 
-Guardar los archivos en:
-
-datasets/raw/
-
-con los siguientes nombres:
-
-- flights_2026_01.csv
-- flights_2026_02.csv
-- flights_2026_03.csv
