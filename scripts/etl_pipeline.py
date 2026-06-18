@@ -1,663 +1,487 @@
-# ============================================================
-# Proyecto: Airline Delay Analysis
-# Archivo: etl_pipeline.py
-# Descripción:
-#   Pipeline ETL para transformar archivos crudos de BTS
-#   en un modelo dimensional tipo estrella en PostgreSQL/Aurora.
-#
-# Flujo:
-#   Extract  -> lectura de CSVs locales
-#   Transform -> creación de dimensiones y tabla de hechos
-#   Load     -> carga en esquema airline_dwh
-# ============================================================
+#!/usr/bin/env python3
+"""
+ETL Pipeline — Airline Delay Analysis (BTS Q1 2026)
 
-import os
-import glob
+Lee los CSVs mensuales del BTS (Reporting Carrier On-Time Performance),
+los transforma al modelo dimensional y los carga a Aurora PostgreSQL.
+
+Uso:
+    python etl_pipeline.py \\
+        --host  aurora-mod4.cluster-XXX.us-east-1.rds.amazonaws.com \\
+        --password TU_PASSWORD \\
+        --database northwind \\
+        --files datasets/raw/flights_2026_01.csv \\
+                datasets/raw/flights_2026_02.csv \\
+                datasets/raw/flights_2026_03.csv
+
+Prerequisito: las dimensiones estáticas deben estar ya cargadas:
+    01_schema_ddl.sql
+    02_dim_fecha_populate.sql
+    03_dim_aerolinea_populate.sql
+    04_dim_cancelacion_populate.sql
+"""
+
+import argparse
 import logging
+import sys
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-
-# ------------------------------------------------------------
-# Configuración general
-# ------------------------------------------------------------
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-RAW_DATA_PATH = PROJECT_ROOT / "datasets" / "raw"
-FILE_PATTERN = "flights_2026_*.csv"
-SCHEMA_NAME = "airline_dwh"
+# ============================================================
+# Logging
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s"
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
 )
+logger = logging.getLogger("etl_airline")
 
 
-# ------------------------------------------------------------
-# Conexión a base de datos
-# ------------------------------------------------------------
-
-def get_database_engine():
-    """
-    Crea la conexión a PostgreSQL/Aurora usando variables de entorno.
-    Las credenciales deben estar en un archivo .env local.
-    """
-
-    load_dotenv()
-
-    db_host = os.getenv("DB_HOST")
-    db_port = os.getenv("DB_PORT", "5432")
-    db_name = os.getenv("DB_NAME")
-    db_user = os.getenv("DB_USER")
-    db_password = os.getenv("DB_PASSWORD")
-
-    if not all([db_host, db_name, db_user, db_password]):
-        raise ValueError(
-            "Faltan variables de entorno. Revisa tu archivo .env: "
-            "DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD."
-        )
-
-    connection_url = (
-        f"postgresql+psycopg2://{db_user}:{db_password}"
-        f"@{db_host}:{db_port}/{db_name}"
-    )
-
-    return create_engine(connection_url)
-
-
-# ------------------------------------------------------------
+# ============================================================
 # Extract
-# ------------------------------------------------------------
+# ============================================================
 
-def extract_data():
+def extract(filepath: str) -> pd.DataFrame:
     """
-    Lee todos los archivos CSV dentro de datasets/raw/
-    que sigan el patrón flights_2026_*.csv.
+    Lee un CSV mensual del BTS y devuelve el DataFrame crudo.
+    Solo carga las columnas que el modelo dimensional necesita.
     """
+    logger.info("Extrayendo: %s", filepath)
 
-    files = sorted(glob.glob(str(RAW_DATA_PATH / FILE_PATTERN)))
-
-    if not files:
-        raise FileNotFoundError(
-            f"No se encontraron archivos en {RAW_DATA_PATH} "
-            f"con patrón {FILE_PATTERN}."
-        )
-
-    logging.info("Archivos encontrados:")
-    for file in files:
-        logging.info(f" - {file}")
-
-    dataframes = []
-
-    for file in files:
-        df_temp = pd.read_csv(file, low_memory=False)
-        df_temp["source_file"] = Path(file).name
-        dataframes.append(df_temp)
-
-    df = pd.concat(dataframes, ignore_index=True)
-
-    logging.info(f"Filas extraídas: {len(df):,}")
-    logging.info(f"Columnas extraídas: {len(df.columns):,}")
-
-    return df
-
-
-# ------------------------------------------------------------
-# Transform
-# ------------------------------------------------------------
-
-def clean_data(df):
-    """
-    Limpia tipos de datos y crea variables auxiliares necesarias
-    para el modelo dimensional.
-    """
-
-    df = df.copy()
-
-    # Convertir fecha
-    df["FL_DATE"] = pd.to_datetime(df["FL_DATE"], errors="coerce")
-
-    # Crear fecha_key con formato YYYYMMDD
-    df["fecha_key"] = df["FL_DATE"].dt.strftime("%Y%m%d").astype("Int64")
-
-    # Crear ruta
-    df["ruta"] = df["ORIGIN"].astype(str) + "-" + df["DEST"].astype(str)
-
-    # Variables numéricas esperadas
-    numeric_columns = [
-        "YEAR", "QUARTER", "MONTH", "DAY_OF_MONTH", "DAY_OF_WEEK",
-        "OP_CARRIER_AIRLINE_ID", "OP_CARRIER_FL_NUM",
-        "ORIGIN_AIRPORT_ID", "DEST_AIRPORT_ID",
-        "CRS_DEP_TIME", "DEP_TIME", "DEP_DELAY", "DEP_DELAY_NEW",
-        "DEP_DEL15", "TAXI_OUT", "WHEELS_OFF", "WHEELS_ON",
-        "TAXI_IN", "CRS_ARR_TIME", "ARR_TIME", "ARR_DELAY",
-        "ARR_DELAY_NEW", "ARR_DEL15", "CANCELLED", "DIVERTED",
+    cols = [
+        "FL_DATE", "YEAR", "MONTH", "DAY_OF_MONTH", "DAY_OF_WEEK",
+        "OP_UNIQUE_CARRIER", "OP_CARRIER_AIRLINE_ID", "OP_CARRIER_FL_NUM",
+        "ORIGIN_AIRPORT_ID", "ORIGIN", "ORIGIN_CITY_NAME",
+        "ORIGIN_STATE_ABR", "ORIGIN_STATE_NM",
+        "DEST_AIRPORT_ID", "DEST", "DEST_CITY_NAME",
+        "DEST_STATE_ABR", "DEST_STATE_NM",
+        "DEP_TIME_BLK", "CRS_DEP_TIME", "DEP_TIME",
+        "DEP_DELAY", "DEP_DELAY_NEW", "DEP_DEL15",
+        "CRS_ARR_TIME", "ARR_TIME",
+        "ARR_DELAY", "ARR_DELAY_NEW", "ARR_DEL15",
+        "TAXI_OUT", "TAXI_IN", "WHEELS_OFF", "WHEELS_ON",
         "CRS_ELAPSED_TIME", "ACTUAL_ELAPSED_TIME", "AIR_TIME",
+        "CANCELLED", "CANCELLATION_CODE", "DIVERTED",
         "FLIGHTS", "DISTANCE", "DISTANCE_GROUP",
         "CARRIER_DELAY", "WEATHER_DELAY", "NAS_DELAY",
-        "SECURITY_DELAY", "LATE_AIRCRAFT_DELAY"
+        "SECURITY_DELAY", "LATE_AIRCRAFT_DELAY",
     ]
 
-    for col in numeric_columns:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Validación básica de fecha
-    missing_dates = df["FL_DATE"].isna().sum()
-    if missing_dates > 0:
-        logging.warning(f"Registros con FL_DATE inválida: {missing_dates:,}")
-        df = df.dropna(subset=["FL_DATE"])
-
-    logging.info(f"Filas después de limpieza: {len(df):,}")
-
+    df = pd.read_csv(filepath, usecols=cols, low_memory=False)
+    logger.info("  Filas leidas: %s | Columnas: %s", f"{len(df):,}", len(df.columns))
     return df
 
 
-def build_dim_fecha(df):
+# ============================================================
+# Transform
+# ============================================================
+
+def transform(df: pd.DataFrame) -> dict:
     """
-    Crea dimensión fecha.
-    Grano: una fila por fecha de vuelo.
+    Transforma el DataFrame crudo en los DataFrames listos
+    para cada tabla del modelo dimensional.
+
+    Retorna un dict con keys:
+        'aeropuertos_origen', 'aeropuertos_destino',
+        'rutas', 'fact'
     """
+    logger.info("Transformando %s filas...", f"{len(df):,}")
+    df = df.copy()
 
-    dim_fecha = (
-        df[[
-            "fecha_key", "FL_DATE", "YEAR", "QUARTER", "MONTH",
-            "DAY_OF_MONTH", "DAY_OF_WEEK"
-        ]]
-        .drop_duplicates()
-        .rename(columns={
-            "FL_DATE": "fecha",
-            "YEAR": "year",
-            "QUARTER": "quarter",
-            "MONTH": "month",
-            "DAY_OF_MONTH": "day_of_month",
-            "DAY_OF_WEEK": "day_of_week"
-        })
-        .sort_values("fecha_key")
-    )
+    # ----------------------------------------------------------
+    # 1. Parsear fecha y construir fecha_key (YYYYMMDD × bloque)
+    # ----------------------------------------------------------
+    # FL_DATE viene como '1/1/2026 12:00:00 AM'
+    df["_fecha"] = pd.to_datetime(df["FL_DATE"], format="%m/%d/%Y %I:%M:%S %p")
+    df["_fecha_str"] = df["_fecha"].dt.strftime("%Y%m%d")
 
-    return dim_fecha
+    # El join con dim_fecha usa fecha_key = YYYYMMDD*100 + blk_num
+    # Los bloques están numerados 1-19 en 02_dim_fecha_populate.sql
+    blk_map = {
+        "0001-0559": 1,  "0600-0659": 2,  "0700-0759": 3,
+        "0800-0859": 4,  "0900-0959": 5,  "1000-1059": 6,
+        "1100-1159": 7,  "1200-1259": 8,  "1300-1359": 9,
+        "1400-1459": 10, "1500-1559": 11, "1600-1659": 12,
+        "1700-1759": 13, "1800-1859": 14, "1900-1959": 15,
+        "2000-2059": 16, "2100-2159": 17, "2200-2259": 18,
+        "2300-2359": 19,
+    }
+    df["_blk_num"] = df["DEP_TIME_BLK"].map(blk_map).fillna(1).astype(int)
+    df["fecha_key"] = df["_fecha_str"].astype(int) * 100 + df["_blk_num"]
 
+    # ----------------------------------------------------------
+    # 2. Limpiar CANCELLATION_CODE
+    #    En el CSV llega como string 'A','B','C','D' o 'NaN'
+    # ----------------------------------------------------------
+    df["CANCELLATION_CODE"] = df["CANCELLATION_CODE"].replace("NaN", None)
 
-def build_dim_aerolinea(df):
-    """
-    Crea dimensión aerolínea.
-    Grano: una fila por aerolínea operadora.
-    """
-
-    dim_aerolinea = (
-        df[[
-            "OP_UNIQUE_CARRIER",
-            "OP_CARRIER_AIRLINE_ID",
-            "OP_CARRIER"
-        ]]
-        .drop_duplicates()
-        .rename(columns={
-            "OP_UNIQUE_CARRIER": "carrier_code",
-            "OP_CARRIER_AIRLINE_ID": "dot_id_reporting_airline",
-            "OP_CARRIER": "iata_code_reporting_airline"
-        })
-        .sort_values("carrier_code")
-    )
-
-    return dim_aerolinea
-
-
-def build_dim_aeropuerto_origen(df):
-    """
-    Crea dimensión aeropuerto origen.
-    Grano: una fila por aeropuerto de origen.
-    """
-
-    dim_origen = (
-        df[[
-            "ORIGIN_AIRPORT_ID",
-            "ORIGIN",
-            "ORIGIN_CITY_NAME",
-            "ORIGIN_STATE_ABR",
-            "ORIGIN_STATE_NM"
-        ]]
-        .drop_duplicates()
+    # ----------------------------------------------------------
+    # 3. Dim aeropuerto origen — deduplicar
+    # ----------------------------------------------------------
+    orig = (
+        df[["ORIGIN_AIRPORT_ID", "ORIGIN", "ORIGIN_CITY_NAME",
+            "ORIGIN_STATE_ABR", "ORIGIN_STATE_NM"]]
+        .drop_duplicates(subset=["ORIGIN"])
         .rename(columns={
             "ORIGIN_AIRPORT_ID": "origin_airport_id",
-            "ORIGIN": "origin",
-            "ORIGIN_CITY_NAME": "origin_city_name",
-            "ORIGIN_STATE_ABR": "origin_state",
-            "ORIGIN_STATE_NM": "origin_state_name"
+            "ORIGIN":            "origin",
+            "ORIGIN_CITY_NAME":  "origin_city_name",
+            "ORIGIN_STATE_ABR":  "origin_state",
+            "ORIGIN_STATE_NM":   "origin_state_name",
         })
-        .sort_values("origin")
     )
 
-    return dim_origen
-
-
-def build_dim_aeropuerto_destino(df):
-    """
-    Crea dimensión aeropuerto destino.
-    Grano: una fila por aeropuerto de destino.
-    """
-
-    dim_destino = (
-        df[[
-            "DEST_AIRPORT_ID",
-            "DEST",
-            "DEST_CITY_NAME",
-            "DEST_STATE_ABR",
-            "DEST_STATE_NM"
-        ]]
-        .drop_duplicates()
+    # ----------------------------------------------------------
+    # 4. Dim aeropuerto destino — deduplicar
+    # ----------------------------------------------------------
+    dest = (
+        df[["DEST_AIRPORT_ID", "DEST", "DEST_CITY_NAME",
+            "DEST_STATE_ABR", "DEST_STATE_NM"]]
+        .drop_duplicates(subset=["DEST"])
         .rename(columns={
             "DEST_AIRPORT_ID": "dest_airport_id",
-            "DEST": "dest",
-            "DEST_CITY_NAME": "dest_city_name",
-            "DEST_STATE_ABR": "dest_state",
-            "DEST_STATE_NM": "dest_state_name"
+            "DEST":            "dest",
+            "DEST_CITY_NAME":  "dest_city_name",
+            "DEST_STATE_ABR":  "dest_state",
+            "DEST_STATE_NM":   "dest_state_name",
         })
-        .sort_values("dest")
     )
 
-    return dim_destino
-
-
-def build_dim_ruta(df):
-    """
-    Crea dimensión ruta.
-    Grano: una fila por combinación origen-destino.
-    """
-
-    dim_ruta = (
-        df[[
-            "ORIGIN",
-            "DEST",
-            "ruta",
-            "DISTANCE_GROUP"
-        ]]
+    # ----------------------------------------------------------
+    # 5. Dim ruta — deduplicar combinaciones origen-destino
+    # ----------------------------------------------------------
+    rutas = (
+        df[["ORIGIN", "DEST", "DISTANCE_GROUP"]]
         .drop_duplicates(subset=["ORIGIN", "DEST"])
         .rename(columns={
-            "ORIGIN": "origin",
-            "DEST": "dest",
-            "DISTANCE_GROUP": "distance_group"
+            "ORIGIN":         "origin",
+            "DEST":           "dest",
+            "DISTANCE_GROUP": "distance_group",
         })
-        .sort_values(["origin", "dest"])
     )
+    rutas["ruta"] = rutas["origin"] + "-" + rutas["dest"]
 
-    return dim_ruta
-
-
-def build_dim_cancelacion():
-    """
-    Crea dimensión de códigos de cancelación.
-    BTS usa normalmente:
-    A = Carrier
-    B = Weather
-    C = National Air System
-    D = Security
-    """
-
-    dim_cancelacion = pd.DataFrame({
-        "cancellation_code": ["A", "B", "C", "D"],
-        "cancellation_reason": [
-            "Carrier",
-            "Weather",
-            "National Air System",
-            "Security"
+    # ----------------------------------------------------------
+    # 6. Fact — renombrar y seleccionar columnas finales
+    # ----------------------------------------------------------
+    fact = df.rename(columns={
+        "OP_CARRIER_FL_NUM":    "flight_number",
+        "CRS_DEP_TIME":         "crs_dep_time",
+        "DEP_TIME":             "dep_time",
+        "DEP_DELAY":            "dep_delay",
+        "DEP_DELAY_NEW":        "dep_delay_minutes",
+        "DEP_DEL15":            "dep_del15",
+        "DEP_TIME_BLK":         "dep_time_blk",
+        "CRS_ARR_TIME":         "crs_arr_time",
+        "ARR_TIME":             "arr_time",
+        "ARR_DELAY":            "arr_delay",
+        "ARR_DELAY_NEW":        "arr_delay_minutes",
+        "ARR_DEL15":            "arr_del15",
+        "TAXI_OUT":             "taxi_out",
+        "TAXI_IN":              "taxi_in",
+        "WHEELS_OFF":           "wheels_off",
+        "WHEELS_ON":            "wheels_on",
+        "CRS_ELAPSED_TIME":     "crs_elapsed_time",
+        "ACTUAL_ELAPSED_TIME":  "actual_elapsed_time",
+        "AIR_TIME":             "air_time",
+        "CANCELLED":            "cancelled_flag",
+        "CANCELLATION_CODE":    "cancellation_code",
+        "DIVERTED":             "diverted_flag",
+        "FLIGHTS":              "flights",
+        "DISTANCE":             "distance",
+        "DISTANCE_GROUP":       "distance_group",
+        "CARRIER_DELAY":        "carrier_delay",
+        "WEATHER_DELAY":        "weather_delay",
+        "NAS_DELAY":            "nas_delay",
+        "SECURITY_DELAY":       "security_delay",
+        "LATE_AIRCRAFT_DELAY":  "late_aircraft_delay",
+        "ORIGIN":               "_origin",
+        "DEST":                 "_dest",
+        "OP_UNIQUE_CARRIER":    "_carrier_code",
+    })[
+        [
+            "fecha_key", "_carrier_code", "_origin", "_dest",
+            "flight_number",
+            "crs_dep_time", "dep_time", "dep_delay", "dep_delay_minutes",
+            "dep_del15", "dep_time_blk",
+            "crs_arr_time", "arr_time", "arr_delay", "arr_delay_minutes",
+            "arr_del15",
+            "taxi_out", "taxi_in", "wheels_off", "wheels_on",
+            "crs_elapsed_time", "actual_elapsed_time", "air_time",
+            "cancelled_flag", "cancellation_code", "diverted_flag",
+            "flights", "distance", "distance_group",
+            "carrier_delay", "weather_delay", "nas_delay",
+            "security_delay", "late_aircraft_delay",
         ]
-    })
-
-    return dim_cancelacion
-
-
-def load_table(engine, df, table_name, if_exists="append"):
-    """
-    Carga un DataFrame a PostgreSQL/Aurora.
-    """
-
-    logging.info(f"Cargando tabla {SCHEMA_NAME}.{table_name}: {len(df):,} filas")
-
-    df.to_sql(
-        table_name,
-        engine,
-        schema=SCHEMA_NAME,
-        if_exists=if_exists,
-        index=False,
-        chunksize=10000,
-        method="multi"
-    )
-
-
-def truncate_tables(engine):
-    """
-    Limpia las tablas antes de cargar para que el ETL sea idempotente.
-    Se puede re-ejecutar sin duplicar datos.
-    """
-
-    logging.info("Limpiando tablas del modelo dimensional")
-
-    truncate_sql = f"""
-    TRUNCATE TABLE
-        {SCHEMA_NAME}.fact_vuelos,
-        {SCHEMA_NAME}.dim_fecha,
-        {SCHEMA_NAME}.dim_aerolinea,
-        {SCHEMA_NAME}.dim_aeropuerto_origen,
-        {SCHEMA_NAME}.dim_aeropuerto_destino,
-        {SCHEMA_NAME}.dim_ruta,
-        {SCHEMA_NAME}.dim_cancelacion
-    RESTART IDENTITY CASCADE;
-    """
-
-    with engine.begin() as conn:
-        conn.execute(text(truncate_sql))
-
-
-def read_dimension_keys(engine):
-    """
-    Lee de vuelta las dimensiones ya cargadas para recuperar surrogate keys.
-    """
-
-    dim_fecha = pd.read_sql(
-        f"SELECT fecha_key, fecha FROM {SCHEMA_NAME}.dim_fecha",
-        engine
-    )
-
-    dim_aerolinea = pd.read_sql(
-        f"""
-        SELECT aerolinea_key, carrier_code
-        FROM {SCHEMA_NAME}.dim_aerolinea
-        """,
-        engine
-    )
-
-    dim_origen = pd.read_sql(
-        f"""
-        SELECT origen_key, origin
-        FROM {SCHEMA_NAME}.dim_aeropuerto_origen
-        """,
-        engine
-    )
-
-    dim_destino = pd.read_sql(
-        f"""
-        SELECT destino_key, dest
-        FROM {SCHEMA_NAME}.dim_aeropuerto_destino
-        """,
-        engine
-    )
-
-    dim_ruta = pd.read_sql(
-        f"""
-        SELECT ruta_key, origin, dest
-        FROM {SCHEMA_NAME}.dim_ruta
-        """,
-        engine
-    )
-
-    dim_cancelacion = pd.read_sql(
-        f"""
-        SELECT cancelacion_key, cancellation_code
-        FROM {SCHEMA_NAME}.dim_cancelacion
-        """,
-        engine
-    )
-
-    return dim_fecha, dim_aerolinea, dim_origen, dim_destino, dim_ruta, dim_cancelacion
-
-
-def build_fact_vuelos(df, engine):
-    """
-    Construye la tabla de hechos agregando las surrogate keys
-    provenientes de las dimensiones.
-    """
-
-    logging.info("Construyendo tabla de hechos")
-
-    (
-        dim_fecha,
-        dim_aerolinea,
-        dim_origen,
-        dim_destino,
-        dim_ruta,
-        dim_cancelacion
-    ) = read_dimension_keys(engine)
-
-    fact = df.copy()
-
-    # Fecha
-    fact = fact.merge(
-        dim_fecha[["fecha_key"]],
-        on="fecha_key",
-        how="left"
-    )
-
-    # Aerolínea
-    fact = fact.merge(
-        dim_aerolinea,
-        left_on="OP_UNIQUE_CARRIER",
-        right_on="carrier_code",
-        how="left"
-    )
-
-    # Origen
-    fact = fact.merge(
-        dim_origen,
-        left_on="ORIGIN",
-        right_on="origin",
-        how="left"
-    )
-
-    # Destino
-    fact = fact.merge(
-        dim_destino,
-        left_on="DEST",
-        right_on="dest",
-        how="left"
-    )
-
-    # Ruta
-    fact = fact.merge(
-        dim_ruta,
-        left_on=["ORIGIN", "DEST"],
-        right_on=["origin", "dest"],
-        how="left",
-        suffixes=("", "_ruta")
-    )
-
-    # Cancelación
-    fact = fact.merge(
-        dim_cancelacion,
-        left_on="CANCELLATION_CODE",
-        right_on="cancellation_code",
-        how="left"
-    )
-
-    fact_vuelos = fact[[
-        "fecha_key",
-        "aerolinea_key",
-        "origen_key",
-        "destino_key",
-        "ruta_key",
-        "cancelacion_key",
-
-        "OP_CARRIER_FL_NUM",
-
-        "CRS_DEP_TIME",
-        "DEP_TIME",
-        "DEP_DELAY",
-        "DEP_DELAY_NEW",
-        "DEP_DEL15",
-        "DEP_TIME_BLK",
-
-        "CRS_ARR_TIME",
-        "ARR_TIME",
-        "ARR_DELAY",
-        "ARR_DELAY_NEW",
-        "ARR_DEL15",
-        "ARR_TIME_BLK",
-
-        "TAXI_OUT",
-        "TAXI_IN",
-        "WHEELS_OFF",
-        "WHEELS_ON",
-
-        "CRS_ELAPSED_TIME",
-        "ACTUAL_ELAPSED_TIME",
-        "AIR_TIME",
-
-        "CANCELLED",
-        "DIVERTED",
-
-        "FLIGHTS",
-        "DISTANCE",
-        "DISTANCE_GROUP",
-
-        "CARRIER_DELAY",
-        "WEATHER_DELAY",
-        "NAS_DELAY",
-        "SECURITY_DELAY",
-        "LATE_AIRCRAFT_DELAY"
-    ]].rename(columns={
-        "OP_CARRIER_FL_NUM": "flight_number",
-
-        "CRS_DEP_TIME": "crs_dep_time",
-        "DEP_TIME": "dep_time",
-        "DEP_DELAY": "dep_delay",
-        "DEP_DELAY_NEW": "dep_delay_minutes",
-        "DEP_DEL15": "dep_del15",
-        "DEP_TIME_BLK": "dep_time_blk",
-
-        "CRS_ARR_TIME": "crs_arr_time",
-        "ARR_TIME": "arr_time",
-        "ARR_DELAY": "arr_delay",
-        "ARR_DELAY_NEW": "arr_delay_minutes",
-        "ARR_DEL15": "arr_del15",
-        "ARR_TIME_BLK": "arr_time_blk",
-
-        "TAXI_OUT": "taxi_out",
-        "TAXI_IN": "taxi_in",
-        "WHEELS_OFF": "wheels_off",
-        "WHEELS_ON": "wheels_on",
-
-        "CRS_ELAPSED_TIME": "crs_elapsed_time",
-        "ACTUAL_ELAPSED_TIME": "actual_elapsed_time",
-        "AIR_TIME": "air_time",
-
-        "CANCELLED": "cancelled_flag",
-        "DIVERTED": "diverted_flag",
-
-        "FLIGHTS": "flights",
-        "DISTANCE": "distance",
-        "DISTANCE_GROUP": "distance_group",
-
-        "CARRIER_DELAY": "carrier_delay",
-        "WEATHER_DELAY": "weather_delay",
-        "NAS_DELAY": "nas_delay",
-        "SECURITY_DELAY": "security_delay",
-        "LATE_AIRCRAFT_DELAY": "late_aircraft_delay"
-    })
-
-    # Validar llaves críticas
-    key_columns = [
-        "fecha_key",
-        "aerolinea_key",
-        "origen_key",
-        "destino_key",
-        "ruta_key"
     ]
 
-    missing_keys = fact_vuelos[key_columns].isna().sum()
+    logger.info(
+        "  Origenes únicos: %s | Destinos únicos: %s | Rutas únicas: %s",
+        len(orig), len(dest), len(rutas),
+    )
 
-    if missing_keys.sum() > 0:
-        logging.warning("Hay llaves faltantes en la fact table:")
-        logging.warning(missing_keys)
-
-    logging.info(f"Filas en fact_vuelos: {len(fact_vuelos):,}")
-
-    return fact_vuelos
-
-
-# ------------------------------------------------------------
-# Validaciones post-carga
-# ------------------------------------------------------------
-
-def validate_load(engine, expected_rows):
-    """
-    Ejecuta validaciones básicas después de cargar el modelo.
-    """
-
-    logging.info("Ejecutando validaciones post-carga")
-
-    queries = {
-        "fact_vuelos": f"SELECT COUNT(*) FROM {SCHEMA_NAME}.fact_vuelos",
-        "dim_fecha": f"SELECT COUNT(*) FROM {SCHEMA_NAME}.dim_fecha",
-        "dim_aerolinea": f"SELECT COUNT(*) FROM {SCHEMA_NAME}.dim_aerolinea",
-        "dim_aeropuerto_origen": f"SELECT COUNT(*) FROM {SCHEMA_NAME}.dim_aeropuerto_origen",
-        "dim_aeropuerto_destino": f"SELECT COUNT(*) FROM {SCHEMA_NAME}.dim_aeropuerto_destino",
-        "dim_ruta": f"SELECT COUNT(*) FROM {SCHEMA_NAME}.dim_ruta",
-        "dim_cancelacion": f"SELECT COUNT(*) FROM {SCHEMA_NAME}.dim_cancelacion"
+    return {
+        "aeropuertos_origen":  orig,
+        "aeropuertos_destino": dest,
+        "rutas":               rutas,
+        "fact":                fact,
     }
 
-    with engine.connect() as conn:
-        for table_name, query in queries.items():
-            count = conn.execute(text(query)).scalar()
-            logging.info(f"{table_name}: {count:,} filas")
 
-        fact_count = conn.execute(text(queries["fact_vuelos"])).scalar()
+# ============================================================
+# Load helpers
+# ============================================================
 
-    if fact_count != expected_rows:
-        raise ValueError(
-            f"Validación fallida: fact_vuelos tiene {fact_count:,} filas, "
-            f"pero se esperaban {expected_rows:,}."
+def _upsert_aeropuertos_origen(df: pd.DataFrame, engine) -> None:
+    """INSERT OR IGNORE para dim_aeropuerto_origen."""
+    with engine.begin() as conn:
+        for _, row in df.iterrows():
+            conn.execute(text("""
+                INSERT INTO airline_dwh.dim_aeropuerto_origen
+                    (origin_airport_id, origin, origin_city_name,
+                     origin_state, origin_state_name)
+                VALUES
+                    (:origin_airport_id, :origin, :origin_city_name,
+                     :origin_state, :origin_state_name)
+                ON CONFLICT (origin) DO NOTHING
+            """), row.to_dict())
+
+
+def _upsert_aeropuertos_destino(df: pd.DataFrame, engine) -> None:
+    """INSERT OR IGNORE para dim_aeropuerto_destino."""
+    with engine.begin() as conn:
+        for _, row in df.iterrows():
+            conn.execute(text("""
+                INSERT INTO airline_dwh.dim_aeropuerto_destino
+                    (dest_airport_id, dest, dest_city_name,
+                     dest_state, dest_state_name)
+                VALUES
+                    (:dest_airport_id, :dest, :dest_city_name,
+                     :dest_state, :dest_state_name)
+                ON CONFLICT (dest) DO NOTHING
+            """), row.to_dict())
+
+
+def _upsert_rutas(df: pd.DataFrame, engine) -> None:
+    """INSERT OR IGNORE para dim_ruta."""
+    with engine.begin() as conn:
+        for _, row in df.iterrows():
+            conn.execute(text("""
+                INSERT INTO airline_dwh.dim_ruta
+                    (origin, dest, ruta, distance_group)
+                VALUES
+                    (:origin, :dest, :ruta, :distance_group)
+                ON CONFLICT (origin, dest) DO NOTHING
+            """), row.to_dict())
+
+
+def _resolve_keys(fact: pd.DataFrame, engine) -> pd.DataFrame:
+    """
+    Sustituye los códigos naturales (_carrier_code, _origin, _dest,
+    cancellation_code) por las surrogate keys de las dimensiones.
+    """
+    logger.info("  Resolviendo surrogate keys...")
+
+    aerolineas = pd.read_sql(
+        "SELECT aerolinea_key, carrier_code FROM airline_dwh.dim_aerolinea",
+        engine,
+    )
+    orig_keys = pd.read_sql(
+        "SELECT origen_key, origin FROM airline_dwh.dim_aeropuerto_origen",
+        engine,
+    )
+    dest_keys = pd.read_sql(
+        "SELECT destino_key, dest FROM airline_dwh.dim_aeropuerto_destino",
+        engine,
+    )
+    ruta_keys = pd.read_sql(
+        "SELECT ruta_key, origin, dest FROM airline_dwh.dim_ruta",
+        engine,
+    )
+    cancel_keys = pd.read_sql(
+        "SELECT cancelacion_key, cancellation_code FROM airline_dwh.dim_cancelacion",
+        engine,
+    )
+
+    fact = fact.merge(aerolineas, left_on="_carrier_code",  right_on="carrier_code",  how="left")
+    fact = fact.merge(orig_keys,  left_on="_origin",        right_on="origin",        how="left")
+    fact = fact.merge(dest_keys,  left_on="_dest",          right_on="dest",          how="left")
+    fact = fact.merge(
+        ruta_keys,
+        left_on=["_origin", "_dest"],
+        right_on=["origin", "dest"],
+        how="left",
+    )
+    # cancellation_code puede ser NULL (vuelos no cancelados)
+    fact = fact.merge(cancel_keys, on="cancellation_code", how="left")
+
+    fact = fact.rename(columns={"cancellation_code": "_cancel_code"})
+
+    return fact[[
+        "fecha_key", "aerolinea_key", "origen_key", "destino_key",
+        "ruta_key", "cancelacion_key", "flight_number",
+        "crs_dep_time", "dep_time", "dep_delay", "dep_delay_minutes",
+        "dep_del15", "dep_time_blk",
+        "crs_arr_time", "arr_time", "arr_delay", "arr_delay_minutes",
+        "arr_del15",
+        "taxi_out", "taxi_in", "wheels_off", "wheels_on",
+        "crs_elapsed_time", "actual_elapsed_time", "air_time",
+        "cancelled_flag", "diverted_flag",
+        "flights", "distance", "distance_group",
+        "carrier_delay", "weather_delay", "nas_delay",
+        "security_delay", "late_aircraft_delay",
+    ]]
+
+
+# ============================================================
+# Load
+# ============================================================
+
+def load(transformed: dict, engine, chunksize: int = 5000) -> None:
+    """
+    Carga todas las tablas en orden:
+      1. dim_aeropuerto_origen  (upsert)
+      2. dim_aeropuerto_destino (upsert)
+      3. dim_ruta               (upsert)
+      4. fact_vuelos            (append por chunks)
+    """
+    logger.info("Cargando dimensiones variables...")
+    _upsert_aeropuertos_origen(transformed["aeropuertos_origen"], engine)
+    logger.info("  dim_aeropuerto_origen: OK")
+
+    _upsert_aeropuertos_destino(transformed["aeropuertos_destino"], engine)
+    logger.info("  dim_aeropuerto_destino: OK")
+
+    _upsert_rutas(transformed["rutas"], engine)
+    logger.info("  dim_ruta: OK")
+
+    logger.info("Resolviendo keys y cargando fact_vuelos...")
+    fact_ready = _resolve_keys(transformed["fact"], engine)
+
+    total = len(fact_ready)
+    loaded = 0
+    for i in range(0, total, chunksize):
+        chunk = fact_ready.iloc[i: i + chunksize]
+        chunk.to_sql(
+            name="fact_vuelos",
+            schema="airline_dwh",
+            con=engine,
+            if_exists="append",
+            index=False,
+            method="multi",
         )
+        loaded += len(chunk)
+        logger.info("  Cargadas %s / %s filas", f"{loaded:,}", f"{total:,}")
 
-    logging.info("Validación completada correctamente")
+    logger.info("fact_vuelos: %s filas cargadas", f"{total:,}")
 
 
-# ------------------------------------------------------------
-# Orquestador
-# ------------------------------------------------------------
+# ============================================================
+# Validate
+# ============================================================
+
+def validate(source_count: int, engine) -> None:
+    """
+    Compara el total de filas del CSV fuente contra lo que
+    quedó en fact_vuelos. Verifica integridad referencial básica.
+    """
+    logger.info("Validando carga...")
+
+    with engine.connect() as conn:
+        db_count = conn.execute(
+            text("SELECT COUNT(*) FROM airline_dwh.fact_vuelos")
+        ).scalar()
+
+        orphan_aerolinea = conn.execute(text("""
+            SELECT COUNT(*) FROM airline_dwh.fact_vuelos
+            WHERE aerolinea_key IS NULL
+        """)).scalar()
+
+        orphan_origen = conn.execute(text("""
+            SELECT COUNT(*) FROM airline_dwh.fact_vuelos
+            WHERE origen_key IS NULL
+        """)).scalar()
+
+        orphan_destino = conn.execute(text("""
+            SELECT COUNT(*) FROM airline_dwh.fact_vuelos
+            WHERE destino_key IS NULL
+        """)).scalar()
+
+        orphan_fecha = conn.execute(text("""
+            SELECT COUNT(*) FROM airline_dwh.fact_vuelos f
+            LEFT JOIN airline_dwh.dim_fecha d USING (fecha_key)
+            WHERE d.fecha_key IS NULL
+        """)).scalar()
+
+    logger.info("  Filas en CSV fuente  : %s", f"{source_count:,}")
+    logger.info("  Filas en fact_vuelos : %s", f"{db_count:,}")
+
+    errors = []
+    if orphan_aerolinea > 0:
+        errors.append(f"aerolinea_key NULL: {orphan_aerolinea}")
+    if orphan_origen > 0:
+        errors.append(f"origen_key NULL: {orphan_origen}")
+    if orphan_destino > 0:
+        errors.append(f"destino_key NULL: {orphan_destino}")
+    if orphan_fecha > 0:
+        errors.append(f"fecha_key sin match en dim_fecha: {orphan_fecha}")
+
+    if errors:
+        for e in errors:
+            logger.error("  FALLO validación: %s", e)
+        sys.exit(1)
+    else:
+        logger.info("  Validación OK — sin orphans ni claves nulas")
+
+
+# ============================================================
+# Main
+# ============================================================
 
 def main():
-    """
-    Orquesta el pipeline completo:
-    Extract -> Transform -> Load -> Validate
-    """
+    parser = argparse.ArgumentParser(description="ETL — Airline Delay Analysis")
+    parser.add_argument("--host",     required=True,  help="Aurora host")
+    parser.add_argument("--port",     default=5432,   type=int)
+    parser.add_argument("--database", required=True,  help="Nombre de la base de datos")
+    parser.add_argument("--user",     default="postgres")
+    parser.add_argument("--password", required=True,  help="Password de Aurora")
+    parser.add_argument(
+        "--files", nargs="+", required=True,
+        help="Rutas a los CSVs mensuales (p.ej. datasets/raw/flights_2026_01.csv)",
+    )
+    parser.add_argument("--chunksize", default=5000, type=int)
+    args = parser.parse_args()
 
-    logging.info("Iniciando ETL Airline Delay Analysis")
+    # Conexión
+    url = (
+        f"postgresql+psycopg2://{args.user}:{args.password}"
+        f"@{args.host}:{args.port}/{args.database}"
+    )
+    engine = create_engine(url, pool_pre_ping=True)
+    logger.info("Conexión a Aurora establecida")
 
-    engine = get_database_engine()
+    total_source = 0
 
-    # Extract
-    df_raw = extract_data()
+    for filepath in args.files:
+        if not Path(filepath).exists():
+            logger.error("Archivo no encontrado: %s", filepath)
+            sys.exit(1)
 
-    # Transform
-    df_clean = clean_data(df_raw)
+        logger.info("=" * 55)
+        logger.info("Procesando: %s", filepath)
+        logger.info("=" * 55)
 
-    dim_fecha = build_dim_fecha(df_clean)
-    dim_aerolinea = build_dim_aerolinea(df_clean)
-    dim_origen = build_dim_aeropuerto_origen(df_clean)
-    dim_destino = build_dim_aeropuerto_destino(df_clean)
-    dim_ruta = build_dim_ruta(df_clean)
-    dim_cancelacion = build_dim_cancelacion()
+        raw        = extract(filepath)
+        total_source += len(raw)
+        transformed = transform(raw)
+        load(transformed, engine, chunksize=args.chunksize)
 
-    # Load
-    truncate_tables(engine)
-
-    load_table(engine, dim_fecha, "dim_fecha")
-    load_table(engine, dim_aerolinea, "dim_aerolinea")
-    load_table(engine, dim_origen, "dim_aeropuerto_origen")
-    load_table(engine, dim_destino, "dim_aeropuerto_destino")
-    load_table(engine, dim_ruta, "dim_ruta")
-    load_table(engine, dim_cancelacion, "dim_cancelacion")
-
-    fact_vuelos = build_fact_vuelos(df_clean, engine)
-    load_table(engine, fact_vuelos, "fact_vuelos")
-
-    # Validate
-    validate_load(engine, expected_rows=len(df_clean))
-
-    logging.info("ETL finalizado correctamente")
+    validate(total_source, engine)
+    logger.info("ETL completado exitosamente.")
 
 
 if __name__ == "__main__":
