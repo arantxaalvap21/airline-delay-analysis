@@ -385,6 +385,11 @@ streamlit run dashboard/dashboard.py
 
 ## 13. Conclusión
 
-El proyecto demuestra un flujo completo de análisis de datos desde la obtención de archivos CSV hasta la construcción de un dashboard interactivo. El modelo dimensional facilita el análisis por aerolínea, fecha, ruta y cancelación, mientras que las consultas SQL y visualizaciones permiten identificar patrones relevantes de retrasos y cancelaciones.
+Este proyecto desarrolló un flujo completo de análisis de datos para estudiar la puntualidad de vuelos domésticos en Estados Unidos durante el primer trimestre de 2026. A partir de archivos CSV públicos del Bureau of Transportation Statistics, se diseñó un modelo dimensional tipo estrella en Aurora PostgreSQL, se construyó un proceso ETL en Python y se generaron consultas SQL avanzadas para analizar retrasos, cancelaciones y patrones operativos por aerolínea, fecha y causa.
 
-Los resultados muestran diferencias importantes entre aerolíneas y causas operativas. En particular, se observa que las cancelaciones están fuertemente asociadas al clima y que ciertas aerolíneas presentan retrasos promedio considerablemente mayores durante el primer trimestre de 2026.
+El modelo dimensional permitió organizar la información en una estructura analítica clara, facilitando consultas por aerolínea, ruta, fecha, aeropuerto y causa de cancelación. Además, el dashboard interactivo en Streamlit permitió visualizar los principales indicadores del proyecto: total de vuelos, retraso promedio de llegada, vuelos cancelados, tasa de cancelación, ranking de aerolíneas, tendencia diaria de retrasos y distribución de cancelaciones por causa.
+
+Los resultados muestran que existen diferencias relevantes entre aerolíneas en términos de puntualidad. Spirit Airlines presentó el mayor retraso promedio de llegada, mientras que Alaska Airlines y Southwest Airlines registraron mejores niveles de desempeño operativo. También se observó que las cancelaciones estuvieron fuertemente asociadas al clima, especialmente durante enero, lo cual confirma la importancia de analizar el comportamiento de los vuelos por mes y causa operativa.
+
+Finalmente, el proyecto cumple con los elementos principales de un flujo de inteligencia de datos: definición del problema analítico, obtención y preparación de datos, modelado dimensional, carga a base de datos, análisis SQL, visualización interactiva y documentación reproducible. Esto permite que el análisis pueda ser consultado, validado y extendido en futuros trabajos.
+
