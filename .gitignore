@@ -1,0 +1,18 @@
+# Credenciales — nunca subir al repo
+.env
+
+# Datos crudos — archivos muy pesados
+datasets/raw/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+env/
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
