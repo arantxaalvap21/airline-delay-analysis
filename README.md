@@ -1,5 +1,4 @@
 # Paso 1 — Problema y dataset
-# (Este contenido se integrará al README.md final en el Paso 7)
 
 ---
 
