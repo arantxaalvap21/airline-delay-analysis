@@ -50,7 +50,7 @@ Estos indicadores sirven como resumen ejecutivo del desempeño general del trime
 
 ### 1. Ranking de aerolíneas por retraso promedio de llegada
 
-![Ranking de aerolíneas](images/ranking_aerolineas.png)
+![Ranking de aerolíneas](images/Ranking de aerolíneas por retraso promedio.png)
 
 Esta gráfica compara el retraso promedio de llegada por aerolínea. Su objetivo es identificar qué compañías presentaron mayores niveles de demora durante el primer trimestre de 2026.
 
@@ -58,7 +58,7 @@ Esta gráfica compara el retraso promedio de llegada por aerolínea. Su objetivo
 
 ### 2. Tendencia diaria de retraso promedio
 
-![Tendencia diaria](images/tendencia_diaria.png)
+![Tendencia diaria](images/Tendencia diaria de retraso.png)
 
 Esta visualización muestra cómo evolucionó el retraso promedio de llegada a lo largo del trimestre. El promedio móvil de 7 días ayuda a suavizar la variabilidad diaria y permite detectar periodos con aumentos relevantes en los retrasos.
 
@@ -66,7 +66,7 @@ Esta visualización muestra cómo evolucionó el retraso promedio de llegada a l
 
 ### 3. Mapa de calor de vuelos con retraso mayor a 15 minutos
 
-![Heatmap de retrasos](images/heatmap_retrasos.png)
+![Heatmap de retrasos](images/%vuelos con retraso.png)
 
 El mapa de calor muestra el porcentaje de vuelos con retraso mayor a 15 minutos por aerolínea y día de la semana. Esta visualización permite identificar patrones operativos asociados a ciertos días y compañías.
 
@@ -74,7 +74,7 @@ El mapa de calor muestra el porcentaje de vuelos con retraso mayor a 15 minutos 
 
 ### 4. Cancelaciones por causa y mes
 
-![Cancelaciones por causa](images/cancelaciones_causa.png)
+![Cancelaciones por causa](images/Cancelaciones por causa y mes.png)
 
 Esta gráfica muestra la distribución de vuelos cancelados por causa y mes. Permite observar qué factores explicaron la mayor cantidad de cancelaciones, como clima, aerolínea, sistema nacional aéreo o seguridad.
 
