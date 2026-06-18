@@ -1,0 +1,14 @@
+ranking,airline_name,carrier_code,avg_arr_delay,total_vuelos,cancelados,pct_cancelados
+1,Spirit Airlines,NK,19.66,36379,3123,8.58
+2,PSA Airlines,OH,16.93,58152,4675,8.04
+3,JetBlue Airways,B6,15.63,57320,3010,5.25
+4,Allegiant Air,G4,13.49,30572,479,1.57
+5,Frontier Airlines,F9,13.01,50557,1405,2.78
+6,SkyWest Airlines,OO,12.08,201632,5549,2.75
+7,American Airlines,AA,11.1,234205,10141,4.33
+8,Republic Airways,YX,5.68,88764,6158,6.94
+9,Envoy Air (American Eagle),MQ,3.57,73604,2174,2.95
+10,United Airlines,UA,3.42,194344,3533,1.82
+11,Delta Air Lines,DL,3.4,240288,7764,3.23
+12,Southwest Airlines,WN,3.2,327083,5659,1.73
+13,Alaska Airlines,AS,3.05,78242,1336,1.71
