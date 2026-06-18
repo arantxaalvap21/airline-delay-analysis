@@ -37,7 +37,7 @@ La parte superior del dashboard muestra los indicadores generales del periodo an
 
 ### 1. Ranking de aerolíneas por retraso promedio
 
-![Ranking de aerolíneas](imagenes/Ranking%20de%20aerolíneas%20por%20retraso%20promedio.png)
+![Ranking de aerolíneas](imagenes/Ranking%20de%20aerol%C3%ADneas%20por%20retraso%20promedio.png)
 
 Esta gráfica compara el retraso promedio de llegada por aerolínea. Permite identificar qué compañías tuvieron mayores niveles de demora durante el primer trimestre de 2026.
 
