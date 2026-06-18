@@ -33,7 +33,7 @@ Estos filtros permiten comparar el comportamiento de retrasos y cancelaciones en
 
 ## KPIs generales
 
-![KPIs del dashboard](images/kpis_dashboard.png)
+![KPIs del dashboard](dashboard/images/kpis_dashboard.png)
 
 La parte superior del dashboard muestra indicadores generales del periodo analizado:
 
