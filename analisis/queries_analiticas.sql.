@@ -1,0 +1,162 @@
+-- ============================================================
+-- Proyecto: Airline Delay Analysis
+-- Archivo: queries_analiticas.sql
+-- Descripción: 5 queries con SQL avanzado que responden
+--   las preguntas analíticas del proyecto.
+--
+-- Técnicas utilizadas:
+--   1. CTE + window function (RANK)
+--   2. Window function con frame (promedio móvil 7 días)
+--   3. COUNT FILTER (% vuelos con retraso > 15 min)
+--   4. PERCENTILE_CONT (distribución de retrasos)
+--   5. CTE + LAG (comparación mes a mes)
+-- ============================================================
+
+SET search_path TO airline_dwh;
+
+
+-- ============================================================
+-- 1. Top 10 aerolíneas por retraso promedio de llegada
+--    Técnica: CTE + RANK() window function
+-- ============================================================
+
+WITH promedios AS (
+    SELECT
+        a.airline_name,
+        a.carrier_code,
+        ROUND(AVG(f.arr_delay), 2)          AS avg_arr_delay,
+        COUNT(*)                             AS total_vuelos,
+        COUNT(*) FILTER (WHERE f.cancelled_flag = 1) AS cancelados
+    FROM      fact_vuelos f
+    JOIN      dim_aerolinea a USING (aerolinea_key)
+    WHERE     f.arr_delay IS NOT NULL
+    GROUP BY  a.airline_name, a.carrier_code
+)
+SELECT
+    RANK() OVER (ORDER BY avg_arr_delay DESC)  AS ranking,
+    airline_name,
+    carrier_code,
+    avg_arr_delay,
+    total_vuelos,
+    cancelados,
+    ROUND(100.0 * cancelados / total_vuelos, 2) AS pct_cancelados
+FROM  promedios
+ORDER BY ranking
+LIMIT 10;
+
+
+-- ============================================================
+-- 2. Promedio móvil de retraso de llegada (7 días)
+--    Técnica: window function con ROWS BETWEEN
+--    Responde: ¿hay tendencia de mejora o empeoramiento en Q1?
+-- ============================================================
+
+SELECT
+    d.fecha,
+    d.month_name,
+    ROUND(AVG(f.arr_delay), 2)                          AS avg_diario,
+    ROUND(AVG(AVG(f.arr_delay)) OVER (
+        ORDER BY d.fecha
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ), 2)                                               AS promedio_movil_7d
+FROM      fact_vuelos f
+JOIN      dim_fecha d   USING (fecha_key)
+WHERE     f.arr_delay IS NOT NULL
+GROUP BY  d.fecha, d.month_name
+ORDER BY  d.fecha;
+
+
+-- ============================================================
+-- 3. % vuelos con retraso > 15 min por aerolínea y día de semana
+--    Técnica: COUNT FILTER (agregación condicional)
+--    Responde: ¿qué aerolíneas son peores en fin de semana?
+-- ============================================================
+
+SELECT
+    a.airline_name,
+    d.day_of_week_name,
+    d.is_weekend,
+    COUNT(*)                                                    AS total_vuelos,
+    COUNT(*) FILTER (WHERE f.arr_del15 = 1)                    AS vuelos_retrasados,
+    ROUND(
+        100.0 * COUNT(*) FILTER (WHERE f.arr_del15 = 1)
+        / NULLIF(COUNT(*), 0),
+        1
+    )                                                           AS pct_retrasados
+FROM      fact_vuelos f
+JOIN      dim_aerolinea a USING (aerolinea_key)
+JOIN      dim_fecha     d USING (fecha_key)
+GROUP BY  a.airline_name, d.day_of_week_name, d.is_weekend,
+          d.day_of_week
+ORDER BY  d.day_of_week, pct_retrasados DESC;
+
+
+-- ============================================================
+-- 4. Distribución de retrasos por banda del día
+--    Técnica: PERCENTILE_CONT (función predefinida no trivial)
+--    Responde: ¿en qué horario se concentran los peores retrasos?
+-- ============================================================
+
+SELECT
+    d.banda_dia,
+    COUNT(*)                                                        AS vuelos,
+    ROUND(AVG(f.arr_delay), 2)                                      AS promedio,
+    ROUND(PERCENTILE_CONT(0.50)
+        WITHIN GROUP (ORDER BY f.arr_delay)::NUMERIC, 2)           AS mediana,
+    ROUND(PERCENTILE_CONT(0.95)
+        WITHIN GROUP (ORDER BY f.arr_delay)::NUMERIC, 2)           AS p95,
+    ROUND(PERCENTILE_CONT(0.99)
+        WITHIN GROUP (ORDER BY f.arr_delay)::NUMERIC, 2)           AS p99
+FROM      fact_vuelos f
+JOIN      dim_fecha   d USING (fecha_key)
+WHERE     f.arr_delay IS NOT NULL
+GROUP BY  d.banda_dia
+ORDER BY  CASE d.banda_dia
+            WHEN 'Red-eye'   THEN 1
+            WHEN 'Morning'   THEN 2
+            WHEN 'Afternoon' THEN 3
+            WHEN 'Night'     THEN 4
+          END;
+
+
+-- ============================================================
+-- 5. Causa dominante de cancelación por mes
+--    + variación mes a mes con LAG
+--    Técnica: CTE + LAG window function
+--    Responde: ¿el clima (Weather) empeoró en enero vs marzo?
+-- ============================================================
+
+WITH cancelaciones_mes AS (
+    SELECT
+        d.month_name,
+        d.month                                         AS mes_num,
+        c.cancellation_reason,
+        COUNT(*)                                        AS total_cancelaciones
+    FROM      fact_vuelos     f
+    JOIN      dim_fecha       d USING (fecha_key)
+    JOIN      dim_cancelacion c USING (cancelacion_key)
+    WHERE     f.cancelled_flag = 1
+      AND     c.cancellation_code IS NOT NULL
+    GROUP BY  d.month_name, d.month, c.cancellation_reason
+)
+SELECT
+    month_name,
+    cancellation_reason,
+    total_cancelaciones,
+    LAG(total_cancelaciones) OVER (
+        PARTITION BY cancellation_reason
+        ORDER BY mes_num
+    )                                                   AS mes_anterior,
+    total_cancelaciones - LAG(total_cancelaciones) OVER (
+        PARTITION BY cancellation_reason
+        ORDER BY mes_num
+    )                                                   AS delta
+FROM  cancelaciones_mes
+ORDER BY mes_num, total_cancelaciones DESC;
+
+-- ============================================================
+-- VERIFICACIÓN RÁPIDA — correr después de cargar el ETL
+-- ============================================================
+-- SELECT COUNT(*) FROM airline_dwh.fact_vuelos;
+-- Esperado: ~1,671,142
+-- ============================================================
