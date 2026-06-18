@@ -369,7 +369,19 @@ streamlit run dashboard/dashboard.py
 
 ---
 
-## 12. Relación con la rúbrica
+## 12. Evidencias de ejecución
+
+La carpeta [`docs/evidencias`](docs/evidencias/) contiene capturas de validación del modelo cargado en DBeaver/Aurora PostgreSQL.
+
+Las evidencias incluyen:
+
+* Visualización del schema `airline_dwh` y sus tablas.
+* Conteo de registros cargados en `fact_vuelos`.
+* Consulta analítica de validación sobre cancelaciones por causa.
+
+---
+
+## 13. Relación con la rúbrica
 
 | Criterio                | Evidencia en el proyecto                                                |
 | ----------------------- | ----------------------------------------------------------------------- |
@@ -383,7 +395,7 @@ streamlit run dashboard/dashboard.py
 
 ---
 
-## 13. Conclusión
+## 14. Conclusión
 
 Este proyecto desarrolló un flujo completo de análisis de datos para estudiar la puntualidad de vuelos domésticos en Estados Unidos durante el primer trimestre de 2026. A partir de archivos CSV públicos del Bureau of Transportation Statistics, se diseñó un modelo dimensional tipo estrella en Aurora PostgreSQL, se construyó un proceso ETL en Python y se generaron consultas SQL avanzadas para analizar retrasos, cancelaciones y patrones operativos por aerolínea, fecha y causa.
 
